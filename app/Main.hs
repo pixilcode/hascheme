@@ -10,7 +10,6 @@ import Data.Bifunctor
 import Data.Functor
 import Numeric
 import Text.Parsec (optionMaybe)
-import GHC.ExecutionStack (Location(functionName))
 
 main :: IO ()
 main = do
@@ -18,7 +17,7 @@ main = do
     let evaled = fmap show $ readExpr (head args) >>= eval
     putStrLn $ extractValue $ trapError evaled
 
--- DATA STRUCTURES
+-- # DATA STRUCTURES
 
 data LispVal = Atom String
              | List [LispVal]
@@ -37,13 +36,13 @@ data LispError = NumArgs Integer [LispVal]
                | BadSpecialForm String LispVal
                | NotFunction String String
                | UnboundVar String String
-               | Default String
+--               | Default String
 
 instance Show LispError where show = showError
 
 type ThrowsError = Either LispError
 
--- DISPLAY
+-- # DISPLAY
 
 showVal :: LispVal -> String
 showVal (String contents)  = "\"" ++ contents ++ "\""
@@ -69,7 +68,7 @@ showError (TypeMismatch expected found) = "Expected " ++ expected
                                        ++ ", found " ++ show found
 showError (Parser parseErr) = "Parse error at " ++  show parseErr
 
--- PARSING
+-- # PARSING
 
 readExpr :: String -> ThrowsError LispVal
 readExpr input = case parse parseExpr "lisp" input of
@@ -206,7 +205,7 @@ escapeChar = do
                    _   -> error "Unreachable case (escapeChar)"
 
 
--- EVALUATION
+-- # EVALUATION
 
 eval :: LispVal -> ThrowsError LispVal
 eval val@(String _) = return val
@@ -224,14 +223,30 @@ apply func args = maybe (throwError $ NotFunction "Unrecognized primitive functi
                         ($ args)
                         (lookup func primitives)
 
--- PRIMITIVES
+-- ## PRIMITIVES
 
 type PrimitiveDict = [(String, [LispVal] -> ThrowsError LispVal)]
 
 primitives :: PrimitiveDict
-primitives = numericBinops ++ typeChecks
+primitives = numericBinops ++ boolBinops ++ typeChecks
 
--- BINARY OPERATOR PRIMITIVES
+unpackNum :: LispVal -> ThrowsError Int
+unpackNum (Number i) = return i
+unpackNum notNum = throwError $ TypeMismatch "number" notNum
+
+unpackStr :: LispVal -> ThrowsError String
+unpackStr (String s) = return s
+unpackStr notString  = throwError $ TypeMismatch "string" notString
+
+unpackChar :: LispVal -> ThrowsError Char
+unpackChar (Character s) = return s
+unpackChar notChar  = throwError $ TypeMismatch "char" notChar
+
+unpackBool :: LispVal -> ThrowsError Bool
+unpackBool (Bool b) = return b
+unpackBool notBool  = throwError $ TypeMismatch "boolean" notBool
+
+-- ### NUMERIC BINARY OPERATOR PRIMITIVES
 
 numericBinops :: PrimitiveDict
 numericBinops = map (second numericBinop) [("+", (+)),
@@ -248,13 +263,64 @@ numericBinop op []            = throwError $ NumArgs 2 []
 numericBinop op singleVal@[_] = throwError $ NumArgs 2 singleVal
 numericBinop op params        = Number . foldl1 op <$> mapM unpackNum params
 
-unpackNum :: LispVal -> ThrowsError Int
-unpackNum (Number i) = return i
-unpackNum notNum = throwError $ TypeMismatch "number" notNum
+-- ### COMPARISON BINARY OPERATORS
 
--- TYPE CHECKING PRIMITIVES
---   These primitives take a list of values as arguments and return `true`
---   if all of the given values are of the type
+boolBinop :: (LispVal -> ThrowsError a) -> (a -> a -> Bool) -> [LispVal] -> ThrowsError LispVal
+boolBinop unpacker op args = if length args /= 2
+                             then throwError $ NumArgs 2 args
+                             else do left <- unpacker $ head args
+                                     right <- unpacker $ args !! 1
+                                     return $ Bool $ left `op` right
+
+boolBinops :: PrimitiveDict
+boolBinops = numBoolBinops ++ boolBoolBinops ++ strBoolBinops
+
+-- #### NUMERIC COMPARISON BINARY OPERATORS
+
+numBoolBinop = boolBinop unpackNum
+
+numBoolBinops :: PrimitiveDict
+numBoolBinops = map (second numBoolBinop) [("=", (==)),
+                                           ("<", (<)),
+                                           (">", (>)),
+                                           ("/=", (/=)),
+                                           (">=", (>=)),
+                                           ("<=", (<=))]
+
+-- #### BOOLEAN COMPARISON BINARY OPERATORS
+
+boolBoolBinop = boolBinop unpackBool
+
+boolBoolBinops :: PrimitiveDict
+boolBoolBinops = map (second boolBoolBinop) [("&&", (&&)),
+                                             ("||", (||))]
+
+-- #### STRING COMPARISON BINARY OPERATORS
+
+strBoolBinop = boolBinop unpackStr
+
+strBoolBinops :: PrimitiveDict
+strBoolBinops = map (second strBoolBinop) [("string=?", (==)),
+                                           ("string<?", (<)),
+                                           ("string>?", (>)),
+                                           ("string<=?", (<=)),
+                                           ("string>=?", (>=))]
+
+-- #### CHAR COMPARISON BINARY OPERATORS
+
+charBoolBinop = boolBinop unpackChar
+
+charBoolBinops :: PrimitiveDict
+charBoolBinops = map (second charBoolBinop) [("char=?", (==)),
+                                           ("char<?", (<)),
+                                           ("char>?", (>)),
+                                           ("char<=?", (<=)),
+                                           ("char>=?", (>=))]
+
+-- ### TYPE CHECKING PRIMITIVES
+--
+-- These primitives take a list of values as arguments and return `true`
+-- if all of the given values are of the type
 
 typeChecks :: PrimitiveDict
 typeChecks = fmap (second listIsType) [("boolean?", isBoolean),
@@ -307,7 +373,7 @@ isVector :: LispVal -> Bool
 isVector (Vector _) = True
 isVector _ = False
 
--- SYMBOL HANDLING PRIMITIVES
+-- ### SYMBOL HANDLING PRIMITIVES
 
 symbolHandling :: PrimitiveDict
 symbolHandling = [("symbol->string", symbolToString),
@@ -323,7 +389,8 @@ stringToSymbol [String string] = return $ Atom string
 stringToSymbol [value]         = throwError $ TypeMismatch "string" value
 stringToSymbol params          = throwError $ NumArgs 1 params
 
--- ERROR HANDLING
+
+-- # ERROR HANDLING
 
 trapError action = catchError action (return . show)
 
